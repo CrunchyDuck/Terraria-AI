@@ -3,9 +3,10 @@ import wave
 from scipy.fft import rfft, rfftfreq
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 
-class Listener:
+class FishingListener:
     def __init__(self, duration, device_name):
         """Duration: Time to listen for, in milliseconds"""
         self.duration = duration/1000
@@ -20,6 +21,8 @@ class Listener:
         for i in range(self.p.get_device_count()):
             if self.p.get_device_info_by_index(i)["name"] == device_name:
                 self.device = i
+
+        self.folder_output_path = "./fishing_log"  # The folder for the listener to save its reports to.
 
     def listen(self):
         # Open a stream
@@ -63,34 +66,71 @@ class Listener:
             new_frame.append(int_value)
         return new_frame
 
+    def parse_intervals_overlap(self, file, interval=0.25, times=5):
+        wf = wave.open(file, "rb")
+        rate = wf.getframerate()
+        num_samples = int(rate * (interval / 2))  # Read the audio in chunks of this size.
+        previous_audio = wf.readframes(num_samples)
 
-def parse_intervals_overlap(file, interval=0.25, times=5):
-    wf = wave.open(file, "rb")
-    rate = wf.getframerate()
-    num_samples = int(rate * (interval/2))  # Read the audio in chunks of this size.
-    previous_audio = wf.readframes(num_samples)
+        for i in range(times):
+            from_time = (interval / 2) * i
+            to_time = (interval / 2) * (i + 2)
 
-    for i in range(times):
-        fig, ax = plt.subplots()
-        curr_audio = wf.readframes(num_samples)
-        audio = previous_audio + curr_audio
-        audio = Listener.convert_bytes(audio)
+            curr_audio = wf.readframes(num_samples)
+            audio = previous_audio + curr_audio
+            audio = FishingListener.convert_bytes(audio)
 
-        yf = rfft(audio)  # Gets the transform. Imaginary numbers.
-        xf = rfftfreq(len(audio), 1 / wf.getframerate())  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges
+            yf = rfft(audio)  # Gets the transform. Imaginary numbers.
+            xf = rfftfreq(len(audio), 1 / wf.getframerate())  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges
 
-        peak1 = get_range_sum(xf, yf, 215, 240)
-        peak2 = get_range_sum(xf, yf, 260, 330)
-        #print([abs(x) for x in yf[0:10]])
-        #print(xf[0:10:1])
+            peak1 = get_range_sum(xf, yf, 215, 240)
+            peak2 = get_range_sum(xf, yf, 260, 330)
+            if self.threshold_check(peak1, peak2):
+                # If we find the fishing sound, display the graph of this sound so I can validate it.
+                fig, ax = plt.subplots()
+                ax.set_ylim([0, 300000])
+                ax.set_xlim([150, 600])
+                ax.plot(xf, np.abs(yf))
+                ax.set_title(f"{from_time} to {to_time}")
+                # Save the audio of the fishing data, too.
+                self.save_audio(f"{from_time}-{to_time}", audio)
 
-        ax.set_ylim([0, 300000])
-        ax.set_xlim([150, 600])
-        ax.plot(xf, np.abs(yf))
-        ax.set_title(f"{(interval/2)*i} to {(interval/2)*(i+2)}")
+            previous_audio = curr_audio
+        plt.show()
 
-        previous_audio = curr_audio
-    plt.show()
+    def threshold_check(self, peak1, peak2):
+        """This is a simple "volume" check, used to filter out low levels such as noise. Prebaked thresholds.
+        Should be replaced in the future with a more advanced check.
+
+        Arguments:
+            Each peak is the sum of the predefined range.
+        Returns: True if all thresholds are correct.
+        """
+        if not peak1 > 200000:
+            return False
+        if not peak2 > 500000:
+            return False
+
+        return True
+
+    def save_audio(self, name, PCM_data):
+        """Saves the given data to a WAV file.
+        name: Name of file to save to
+        PCM_data: Uncompressed audio data to be saved."""
+        # Create dir
+        Path(f"{self.folder_output_path}/{name}").parent.mkdir(parents=True, exist_ok=True)
+
+        # Convert PCM data to bytes.
+        _bytes = b''
+        for number in PCM_data:
+            _bytes += number.to_bytes(2, "little", signed=True)
+
+        wf = wave.open(f"{self.folder_output_path}/{name}.wav", "wb")
+        wf.setframerate(44100)
+        wf.setsampwidth(2)
+        wf.setnchannels(1)
+        wf.writeframes(_bytes)
+        wf.close()
 
 
 def get_range_sum(xf, yf, low, high):
@@ -142,7 +182,8 @@ def get_range_sum(xf, yf, low, high):
 #  I could compare the "shape", E.G peak 1 is about 2.5x bigger than peak 2.
 #  I could create a normalized standard for the frequency, similar to "last frame".
 
-parse_intervals_overlap("terr_example_audio.wav")
+l = FishingListener(2500, "Line In (High Definition Audio ")
+l.parse_intervals_overlap("terr_example_audio.wav")
 exit()
 
 
