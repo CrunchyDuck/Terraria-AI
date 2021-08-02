@@ -5,17 +5,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import shutil
-
+from datetime import datetime
 
 class FishingListener:
-    def __init__(self, duration, device_name):
+    def __init__(self, device_name):
         """Duration: Time to listen for, in milliseconds"""
-        self.duration = duration/1000
         self.p = pyaudio.PyAudio()
         self.chunk = 1024
         self.sample_format = pyaudio.paInt16
         self.channels = 1
-        self.fs = 44100
+        self.fs = 48000
         self.filename = "output.wav"
 
         self.device = 0
@@ -26,7 +25,15 @@ class FishingListener:
         self.folder_output_path = "./fishing_log"  # The folder for the listener to save its reports to.
 
     def listen(self):
+        """Enters the listening loop."""
+        interval_size = 0.125  # How large the chunks of audio we analyse are. I want to increase this for performance, eventually.
+        curr_audio = []
+        prev_audio = []
+        read_count = int(self.fs / self.chunk * interval_size)
+
         # Open a stream
+        # TODO: How do I handle the analysis lagging behind the audio stream?
+        # FIXME: Starting this stream causes some audio on my PC to stop working.
         stream = self.p.open(
             format=self.sample_format,
             channels=self.channels,
@@ -35,18 +42,49 @@ class FishingListener:
             input=True,
             input_device_index=self.device
         )
-        frames = []
 
-        # Record for duration time
-        for i in range(0, int(self.fs / self.chunk * self.duration)):
-            data = stream.read(self.chunk)
-            frames.append(data)
+        # Load the first chunk of "previous audio"
+        for i in range(read_count):
+            prev_audio += stream.read(self.chunk)
+        prev_audio = self.convert_bytes(prev_audio)
 
-        # Convert from bytes to PCM
-        # Values are stored as signed 16 bit integers, in little endian format. This parses them.
-        new_frame = []
-        for y in range(len(frames)):
-            new_frame += self.convert_bytes(frames[y])
+        # FIXME: Fishing sound is subtly pitch shifted each time it is played by a couple hz. This causes false negatives sometimes.
+        #  I could solve this by trying to locate the first position were the given peak thresholds match up.
+        #  However, this might increase the computational load a lot more, and I haven't properly assessed how much I have to work with.
+        while True:
+            # Read the given amount of time from the stream
+            for i in range(read_count):
+                curr_audio += stream.read(self.chunk)
+            curr_audio = self.convert_bytes(curr_audio)
+            audio = prev_audio + curr_audio
+
+            yf = rfft(audio)  # Gets the transform. Imaginary numbers.
+            xf = rfftfreq(len(audio), 1 / self.fs)  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges
+
+            peak1 = get_range_sum(xf, yf, 230, 240)
+            peak2 = get_range_sum(xf, yf, 260, 330)
+            dip1 = get_range_sum(xf, yf, 245, 255)
+            # I want to keep the number of checks minimal so code doesn't become spaghetti.
+            # If it doesn't work, find better checks, don't add more.
+            if self.threshold_check(peak1, peak2):# and self.relative_check(peak1, dip1):
+                time_now = datetime.now().strftime("%H-%M-%S.%f")
+                print(f"Found {time_now}")
+
+                # If we find the fishing sound, create a graph of this sound so I can validate it.
+                plt.axis([150, 600, 0, 400000])
+                plt.title(f"{time_now}")
+                plt.xlabel("Frequency (Hz)")
+                plt.ylabel("Amplitude")
+                plt.plot(xf, np.abs(yf))
+                # Save the audio and analysis of the fishing data.
+                self.save_audio(f"{time_now}", audio)
+                plt.savefig(f'./{self.folder_output_path}/{time_now}.png')
+                plt.close()
+
+            prev_audio = curr_audio
+            curr_audio = []
+
+
 
         return new_frame
 
@@ -63,11 +101,15 @@ class FishingListener:
         new_frame = []
         for i in range(len(_bytes) // 2):
             sample = _bytes[i * 2:i * 2 + 2]
-            int_value = int.from_bytes(sample, byteorder="little", signed=True)
+            try:
+                int_value = int.from_bytes(sample, byteorder="little", signed=True)
+            except Exception as e:
+                print(sample)
+                raise e
             new_frame.append(int_value)
         return new_frame
 
-    def parse_intervals_overlap(self, file, interval=0.25):
+    def parse_file_intervals_overlap(self, file, interval=0.25):
         try:
             shutil.rmtree(self.folder_output_path)  # Clear log folder.
         except FileNotFoundError:
@@ -120,9 +162,9 @@ class FishingListener:
             Each peak is the sum of the predefined range.
         Returns: True if all thresholds are correct.
         """
-        if not peak1 > 250000:
+        if not peak1 > 200000:
             return False
-        if not peak2 > 700000:
+        if not peak2 > 500000:
             return False
 
         return True
@@ -183,64 +225,14 @@ def get_range_sum(xf, yf, low, high):
 
     return np.sum([abs(x) for x in yf[x1:x2]])
 
-
-# TODO: For error checking, make the bot log a graph of, and an audio sample of anything that returns a hit.
-#  This would allow me to analyse any false positives.
-
-#l = Listener(2000, "Line In (High Definition Audio ")
-#frames = l.listen()
-#exit()
-
-
-# peak 1: 220-240
-# peak 2: 260-330
-
-# dip 1: 240-260
-
 # TODO: I need to find a way to compare the values of my graph to its surroundings, to detect when a spike has happened.
 #  I could set specific number thresholds. This would be easiest, but will also break fastest.
 #  I could compare to the last "frame". This scales with volume, but is complex.
 #  I could compare the "shape", E.G peak 1 is about 2.5x bigger than peak 2.
 #  I could create a normalized standard for the frequency, similar to "last frame".
 
-l = FishingListener(2500, "Line In (High Definition Audio ")
-l.parse_intervals_overlap("terr_example_audio.wav")
-exit()
 
-
-# Read audio from wav file.
-wf = wave.open("fishing_sound.wav", "rb")
-print(wf.getframerate())
-frames = wf.readframes(99999999)
-frames = Listener.convert_bytes(frames)
-
-yf = rfft(frames)  # Gets the transform. This returns complex numbers.
-xf = rfftfreq(len(frames), 1/wf.getframerate())  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges.
-
-plt.plot(xf[:100], np.abs(yf)[:100])
-plt.show()
-
-exit()
-
-
-# Number of sample points
-
-N = 600
-
-# sample spacing
-
-T = 1.0 / 800.0
-
-x = np.linspace(0.0, N*T, N, endpoint=False)
-
-y = np.sin(50.0 * 2.0*np.pi*x) + 0.5*np.sin(80.0 * 2.0*np.pi*x)
-
-yf = fft(y)
-
-xf = fftfreq(N, T)[:N//2]
-
-plt.plot(xf, 2.0/N * np.abs(yf[0:N//2]))
-
-plt.grid()
-
-plt.show()
+if __name__ == "__main__":
+    l = FishingListener("Line In (High Definition Audio ")
+    #l.parse_file_intervals_overlap("terr_example_audio.wav")
+    l.listen()
