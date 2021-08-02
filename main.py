@@ -31,9 +31,12 @@ class FishingListener:
                 self.device = i
 
         self.folder_output_path = "./fishing_log"  # The folder for the listener to save its reports to.
-        self.stop_command = False
+        self.stop_command = True
         self.on = True
         self.stream = None
+
+        self.mouse = mouse.Controller()
+        self.aim_position = (0, 0)  # Where to position the mouse when fishing.
 
         try:
             shutil.rmtree(self.folder_output_path)  # Clear log folder.
@@ -51,7 +54,6 @@ class FishingListener:
             on_press=self.on_press
         )
         l.start()
-        m = mouse.Controller()
 
         # Open a stream
         # TODO: How do I handle the analysis lagging behind the audio stream?
@@ -79,6 +81,7 @@ class FishingListener:
                 print(f"Now: {self.on}")
                 if self.on:
                     self.stream.start_stream()
+                    self.aim_position = self.mouse.position
                 else:
                     self.stream.stop_stream()
                 prev_audio = []
@@ -104,7 +107,7 @@ class FishingListener:
             # I want to keep the number of checks minimal so code doesn't become spaghetti.
             # If it doesn't work, find better checks, don't add more.
             if self.threshold_check(peak1, peak2):# and self.relative_check(peak1, dip1):
-                self.heard_sound(m)
+                self.heard_sound()
                 curr_audio = []
                 time_now = datetime.now().strftime("%H-%M-%S.%f")
 
@@ -131,17 +134,26 @@ class FishingListener:
     def stop_listen(self):
         self.stop = True
 
-    def heard_sound(self, _mouse):
+    def heard_sound(self):
+        pos_before = self.mouse.position
         self.stream.stop_stream()
-        _mouse.press(mouse.Button.left)
-        time.sleep(0.1)
-        _mouse.release(mouse.Button.left)
+
+        self.mouse.position = self.aim_position
+        self.click()
+        self.mouse.position = pos_before
         time.sleep(0.5)
-        _mouse.press(mouse.Button.left)
-        time.sleep(0.1)
-        _mouse.release(mouse.Button.left)
+
+        self.mouse.position = self.aim_position
+        self.click()
+        self.mouse.position = pos_before
         time.sleep(0.7)
+
         self.stream.start_stream()
+
+    def click(self):
+        self.mouse.press(mouse.Button.left)
+        time.sleep(0.06)  # About 3 frames in a 60 fps game.
+        self.mouse.release(mouse.Button.left)
 
     @staticmethod
     def convert_bytes(_bytes):
@@ -212,6 +224,8 @@ class FishingListener:
         if not peak1 > 200000:
             return False
         if not peak2 > 500000:
+            return False
+        if not peak2 > peak1:
             return False
 
         return True
