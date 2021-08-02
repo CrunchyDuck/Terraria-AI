@@ -1,0 +1,15 @@
+The first and most important part of making an AI that can listen is well, listening. Finding a way to record a computer's audio in python is surprisingly hard. I've always gotten the impression that audio is a bit of a black sheep in programming.
+Most of the threads on the topic I found were old, poorly trodden, and seemed to barely function. I had heard about virtual audio cables once before, but I wasn't sure I wanted to spend the time to learn how to use them.
+But the name, virtual audio cables, gave me an idea. So to record audio, I'm using using an audio splitter on my speaker out, and plugging it into my line-in. This has the effect of turning my desktop audio into microphone audio, which is much easier to record. It also lets me mic spam more effectively.
+
+
+Let's take a look at a spectrogram of fishing.
+The vertical axis specifies frequency, the horizontal time. The whiter a part is, the louder it is.
+Let's listen to some of the sounds at this point.
+Now, already, as a human, you can probably start to visually identify some more times where these sounds come up. This is the teleport sound, this is the menu sound, and here is our important fishing sound.
+
+So how do we go about identifying this fishing sound? The goal is to ultimately turn this image into a true or false statement.
+First, we need to make sure we're keeping the period we look at small. We'll only *start* checking for fishing once we know we've casted a line, so after this point. Then, we'll look at the audio in groups of about 1 second. These groups also need to overlap, so we don't accidentally cut the fishing sound in half.
+Now I'm going to do a similar thing on the vertical axis, I'm going to add up all of the values in certain frequency bands, so we can compare a range of frequencies, rather than a single frequency, for a bit more reliability.
+When we see a spike in this range of frequencies, it means the fishing sound (or something similar) has happened.
+
