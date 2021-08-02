@@ -6,10 +6,18 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import shutil
 from datetime import datetime
+from pynput import mouse, keyboard
+import threading
+from collections import defaultdict
+import time
+# This might seem mad. Why use threading functions from a UI library? Simply: I'm used to them. Wanted a threading solution I liked. I like this one.
+
 
 class FishingListener:
     def __init__(self, device_name):
         """Duration: Time to listen for, in milliseconds"""
+        super().__init__()
+
         self.p = pyaudio.PyAudio()
         self.chunk = 1024
         self.sample_format = pyaudio.paInt16
@@ -23,6 +31,14 @@ class FishingListener:
                 self.device = i
 
         self.folder_output_path = "./fishing_log"  # The folder for the listener to save its reports to.
+        self.stop_command = False
+        self.on = True
+        self.stream = None
+
+        try:
+            shutil.rmtree(self.folder_output_path)  # Clear log folder.
+        except FileNotFoundError:
+            pass
 
     def listen(self):
         """Enters the listening loop."""
@@ -31,10 +47,16 @@ class FishingListener:
         prev_audio = []
         read_count = int(self.fs / self.chunk * interval_size)
 
+        l = keyboard.Listener(
+            on_press=self.on_press
+        )
+        l.start()
+        m = mouse.Controller()
+
         # Open a stream
         # TODO: How do I handle the analysis lagging behind the audio stream?
         # FIXME: Starting this stream causes some audio on my PC to stop working.
-        stream = self.p.open(
+        self.stream = self.p.open(
             format=self.sample_format,
             channels=self.channels,
             rate=self.fs,
@@ -45,16 +67,31 @@ class FishingListener:
 
         # Load the first chunk of "previous audio"
         for i in range(read_count):
-            prev_audio += stream.read(self.chunk)
+            prev_audio += self.stream.read(self.chunk)
         prev_audio = self.convert_bytes(prev_audio)
 
         # FIXME: Fishing sound is subtly pitch shifted each time it is played by a couple hz. This causes false negatives sometimes.
         #  I could solve this by trying to locate the first position were the given peak thresholds match up.
         #  However, this might increase the computational load a lot more, and I haven't properly assessed how much I have to work with.
         while True:
+            if self.stop_command:
+                self.on = not self.on
+                print(f"Now: {self.on}")
+                if self.on:
+                    self.stream.start_stream()
+                else:
+                    self.stream.stop_stream()
+                prev_audio = []
+                curr_audio = []
+                self.stop_command = False
+
+            if not self.on:
+                time.sleep(0.1)
+                continue
+
             # Read the given amount of time from the stream
             for i in range(read_count):
-                curr_audio += stream.read(self.chunk)
+                curr_audio += self.stream.read(self.chunk)
             curr_audio = self.convert_bytes(curr_audio)
             audio = prev_audio + curr_audio
 
@@ -67,8 +104,9 @@ class FishingListener:
             # I want to keep the number of checks minimal so code doesn't become spaghetti.
             # If it doesn't work, find better checks, don't add more.
             if self.threshold_check(peak1, peak2):# and self.relative_check(peak1, dip1):
+                self.heard_sound(m)
+                curr_audio = []
                 time_now = datetime.now().strftime("%H-%M-%S.%f")
-                print(f"Found {time_now}")
 
                 # If we find the fishing sound, create a graph of this sound so I can validate it.
                 plt.axis([150, 600, 0, 400000])
@@ -83,18 +121,27 @@ class FishingListener:
 
             prev_audio = curr_audio
             curr_audio = []
+        self.stream.close()
+        self.stop = False
 
+    def on_press(self, key):
+        if key == keyboard.Key.f2:
+            self.stop_command = True
 
+    def stop_listen(self):
+        self.stop = True
 
-        return new_frame
-
-        # Save the recorded data as a WAV file
-        wf = wave.open(self.filename, 'wb')
-        wf.setnchannels(self.channels)
-        wf.setsampwidth(self.p.get_sample_size(self.sample_format))
-        wf.setframerate(self.fs)
-        wf.writeframes(b''.join(frames))
-        wf.close()
+    def heard_sound(self, _mouse):
+        self.stream.stop_stream()
+        _mouse.press(mouse.Button.left)
+        time.sleep(0.1)
+        _mouse.release(mouse.Button.left)
+        time.sleep(0.5)
+        _mouse.press(mouse.Button.left)
+        time.sleep(0.1)
+        _mouse.release(mouse.Button.left)
+        time.sleep(0.7)
+        self.stream.start_stream()
 
     @staticmethod
     def convert_bytes(_bytes):
@@ -196,6 +243,14 @@ class FishingListener:
         wf.close()
 
 
+class TerrariaBot:
+    def __init__(self, audio_device_name):
+        self.ears = {"Fishing": FishingListener(audio_device_name)}
+
+    def update(self):
+        self.ears["Fishing"].test()
+
+
 def get_range_sum(xf, yf, low, high):
     """Gets the total amplitude of a given range of frequencies.
 
@@ -225,6 +280,7 @@ def get_range_sum(xf, yf, low, high):
 
     return np.sum([abs(x) for x in yf[x1:x2]])
 
+
 # TODO: I need to find a way to compare the values of my graph to its surroundings, to detect when a spike has happened.
 #  I could set specific number thresholds. This would be easiest, but will also break fastest.
 #  I could compare to the last "frame". This scales with volume, but is complex.
@@ -233,6 +289,7 @@ def get_range_sum(xf, yf, low, high):
 
 
 if __name__ == "__main__":
+    #TerrariaBot("Line In (High Definition Audio ")
     l = FishingListener("Line In (High Definition Audio ")
     #l.parse_file_intervals_overlap("terr_example_audio.wav")
     l.listen()
