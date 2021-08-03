@@ -107,17 +107,20 @@ class FishingListener:
             # I want to keep the number of checks minimal so code doesn't become spaghetti.
             # If it doesn't work, find better checks, don't add more.
             if self.threshold_check(peak1, peak2):# and self.relative_check(peak1, dip1):
-                self.heard_sound()
-                curr_audio = []
+                self.heard_sound()  # Reel line in, cast again.
+                curr_audio = []  # Clear audio cache
                 time_now = datetime.now().strftime("%H-%M-%S.%f")
 
                 # If we find the fishing sound, create a graph of this sound so I can validate it.
-                plt.axis([150, 600, 0, 400000])
                 plt.title(f"{time_now}")
                 plt.xlabel("Frequency (Hz)")
                 plt.ylabel("Amplitude")
+                plt.axvspan(230, 240, color="mediumaquamarine")  # Colour the analysed bands
+                plt.axvspan(260, 330, color="mediumaquamarine")
+                plt.axis([150, 600, 0, 400000])  # Limit axis to ranges we care about.
                 plt.plot(xf, np.abs(yf))
-                # Save the audio and analysis of the fishing data.
+
+                # Save the audio and graph of the fishing data.
                 self.save_audio(f"{time_now}", audio)
                 plt.savefig(f'./{self.folder_output_path}/{time_now}.png')
                 plt.close()
@@ -125,7 +128,6 @@ class FishingListener:
             prev_audio = curr_audio
             curr_audio = []
         self.stream.close()
-        self.stop = False
 
     def on_press(self, key):
         if key == keyboard.Key.f2:
