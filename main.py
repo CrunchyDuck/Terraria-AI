@@ -1,4 +1,4 @@
-import pyaudio
+#import pyaudio
 import wave
 from scipy.fft import rfft, rfftfreq
 import numpy as np
@@ -7,9 +7,10 @@ from pathlib import Path
 import shutil
 from datetime import datetime
 from pynput import mouse, keyboard
-import threading
-from collections import defaultdict
+#import threading
+#from collections import defaultdict
 import time
+exit()
 # This might seem mad. Why use threading functions from a UI library? Simply: I'm used to them. Wanted a threading solution I liked. I like this one.
 
 
