@@ -1,4 +1,4 @@
-#import pyaudio
+import pyaudio
 import wave
 from scipy.fft import rfft, rfftfreq
 import numpy as np
@@ -8,9 +8,8 @@ import shutil
 from datetime import datetime
 from pynput import mouse, keyboard
 #import threading
-#from collections import defaultdict
+from collections import namedtuple
 import time
-exit()
 # This might seem mad. Why use threading functions from a UI library? Simply: I'm used to them. Wanted a threading solution I liked. I like this one.
 
 
@@ -43,6 +42,8 @@ class FishingListener:
             shutil.rmtree(self.folder_output_path)  # Clear log folder.
         except FileNotFoundError:
             pass
+        p = Path(f"{self.folder_output_path}")
+        p.mkdir(parents=True, exist_ok=True)
 
     def listen(self):
         """Enters the listening loop."""
@@ -99,32 +100,16 @@ class FishingListener:
             curr_audio = self.convert_bytes(curr_audio)
             audio = prev_audio + curr_audio
 
-            yf = rfft(audio)  # Gets the transform. Imaginary numbers.
-            xf = rfftfreq(len(audio), 1 / self.fs)  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges
-
-            peak1 = get_range_sum(xf, yf, 230, 240)
-            peak2 = get_range_sum(xf, yf, 260, 330)
-            dip1 = get_range_sum(xf, yf, 245, 255)
-            # I want to keep the number of checks minimal so code doesn't become spaghetti.
-            # If it doesn't work, find better checks, don't add more.
-            if self.threshold_check(peak1, peak2):# and self.relative_check(peak1, dip1):
-                self.heard_sound()  # Reel line in, cast again.
-                curr_audio = []  # Clear audio cache
+            fishing_sound = self.analyse_fishing(audio)
+            # If it doesn't work, find better checks, don't add more. I want to keep the number of checks minimal so code doesn't become spaghetti.
+            if fishing_sound.found:
+                self.stream.stop_stream()
                 time_now = datetime.now().strftime("%H-%M-%S.%f")
-
-                # If we find the fishing sound, create a graph of this sound so I can validate it.
-                plt.title(f"{time_now}")
-                plt.xlabel("Frequency (Hz)")
-                plt.ylabel("Amplitude")
-                plt.axvspan(230, 240, color="mediumaquamarine")  # Colour the analysed bands
-                plt.axvspan(260, 330, color="mediumaquamarine")
-                plt.axis([150, 600, 0, 400000])  # Limit axis to ranges we care about.
-                plt.plot(xf, np.abs(yf))
-
-                # Save the audio and graph of the fishing data.
-                self.save_audio(f"{time_now}", audio)
-                plt.savefig(f'./{self.folder_output_path}/{time_now}.png')
-                plt.close()
+                self.heard_sound()  # Reel line in, cast again.
+                self.save_analysis(time_now, fishing_sound)
+                self.save_audio(time_now, audio)
+                self.stream.start_stream()
+                curr_audio = []  # Clear audio cache
 
             prev_audio = curr_audio
             curr_audio = []
@@ -139,19 +124,65 @@ class FishingListener:
 
     def heard_sound(self):
         pos_before = self.mouse.position
-        self.stream.stop_stream()
-
+        # Reel line in
         self.mouse.position = self.aim_position
         self.click()
         self.mouse.position = pos_before
         time.sleep(0.5)
 
+        # Cast line
         self.mouse.position = self.aim_position
         self.click()
         self.mouse.position = pos_before
         time.sleep(0.7)
 
-        self.stream.start_stream()
+    def analyse_fishing(self, audio):
+        """
+        Analyse PCM audio and return an object with the data.
+        """
+        fishing_sound = namedtuple("fishing_sound", "xf yf found peak1 peak2 dip1")
+        yf = rfft(audio)  # Gets the transform. Imaginary numbers.
+        xf = rfftfreq(len(audio), 1 / self.fs)  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges
+
+        # TODO: Refine my tests further.
+        peak1 = get_range_sum(xf, yf, 230, 240)
+        peak2 = get_range_sum(xf, yf, 260, 330)
+        dip1 = get_range_dip(xf, yf, 240, 270)
+        found = True if self.threshold_check(peak1, peak2) else False
+
+        return fishing_sound(xf, yf, found, peak1, peak2, dip1)
+
+    def save_analysis(self, name, analysis):
+        """
+        Saves the a graph of the analysis.
+        """
+        # Create a graph of the audio
+        plt.title(f"{name}")
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("Amplitude")
+        plt.axvspan(220, 250, color="mediumaquamarine")  # Colour the analysed bands
+        plt.axvspan(270, 330, color="mediumaquamarine")
+        plt.axvspan(240, 270, color="indianred")
+        plt.axis([150, 600, 0, 400000])  # Limit axis to ranges we care about.
+        plt.plot(analysis.xf, np.abs(analysis.yf))
+        plt.savefig(f'{self.folder_output_path}/{name}.png')
+        plt.close()
+
+    def save_audio(self, name, PCM_data):
+        """Saves the given data to a WAV file.
+        name: Name of file to save to
+        PCM_data: Uncompressed audio data to be saved."""
+        # Convert PCM data to bytes.
+        _bytes = b''
+        for number in PCM_data:
+            _bytes += number.to_bytes(2, "little", signed=True)
+
+        wf = wave.open(f"{self.folder_output_path}/{name}.wav", "wb")
+        wf.setframerate(44100)
+        wf.setsampwidth(2)
+        wf.setnchannels(1)
+        wf.writeframes(_bytes)
+        wf.close()
 
     def click(self):
         self.mouse.press(mouse.Button.left)
@@ -172,11 +203,6 @@ class FishingListener:
         return new_frame
 
     def parse_file_intervals_overlap(self, file, interval=0.25):
-        try:
-            shutil.rmtree(self.folder_output_path)  # Clear log folder.
-        except FileNotFoundError:
-            pass
-
         wf = wave.open(file, "rb")
         rate = wf.getframerate()
         num_samples = int(rate * (interval / 2))  # Read the audio in chunks of this size.
@@ -184,34 +210,26 @@ class FishingListener:
 
         i = 0
         while True:
+            if i > 7:
+                break
+
             from_time = (interval / 2) * i
             to_time = (interval / 2) * (i + 2)
-
             curr_audio = wf.readframes(num_samples)
             if not curr_audio:  # End of file
                 break
+
             audio = previous_audio + curr_audio
             audio = FishingListener.convert_bytes(audio)
 
-            yf = rfft(audio)  # Gets the transform. Imaginary numbers.
-            xf = rfftfreq(len(audio), 1 / wf.getframerate())  # This calculates the "grouping" of frequencies. Might be able to mess with this for my ranges
-
-            peak1 = get_range_sum(xf, yf, 230, 240)
-            peak2 = get_range_sum(xf, yf, 260, 330)
-            dip1 = get_range_sum(xf, yf, 245, 255)
+            fishing_sound = self.analyse_fishing(audio)
             # I want to keep the number of checks minimal so code doesn't become spaghetti.
             # If it doesn't work, find better checks, don't add more.
-            if self.threshold_check(peak1, peak2) and self.relative_check(peak1, dip1):
-                # If we find the fishing sound, create a graph of this sound so I can validate it.
-                plt.axis([150, 600, 0, 400000])
-                plt.title(f"{from_time} to {to_time}")
-                plt.xlabel("Frequency (Hz)")
-                plt.ylabel("Amplitude")
-                plt.plot(xf, np.abs(yf))
-                # Save the audio and analysis of the fishing data.
-                self.save_audio(f"{from_time}-{to_time}", audio)
-                plt.savefig(f'./{self.folder_output_path}/{from_time}-{to_time}.png')
-                plt.close()
+            if fishing_sound.found:
+                name = f"{from_time}-{to_time}"
+                self.save_analysis(name, fishing_sound)
+                self.save_audio(name, audio)
+                print(f"{name}   {round(fishing_sound.peak1, 2)}   {round(fishing_sound.peak2, 2)}   {round(fishing_sound.dip1, 2)}")
 
             previous_audio = curr_audio
             i += 1
@@ -240,32 +258,73 @@ class FishingListener:
             return False
         return True
 
-    def save_audio(self, name, PCM_data):
-        """Saves the given data to a WAV file.
-        name: Name of file to save to
-        PCM_data: Uncompressed audio data to be saved."""
-        # Create dir
-        Path(f"{self.folder_output_path}/{name}").parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert PCM data to bytes.
-        _bytes = b''
-        for number in PCM_data:
-            _bytes += number.to_bytes(2, "little", signed=True)
-
-        wf = wave.open(f"{self.folder_output_path}/{name}.wav", "wb")
-        wf.setframerate(44100)
-        wf.setsampwidth(2)
-        wf.setnchannels(1)
-        wf.writeframes(_bytes)
-        wf.close()
-
-
-class TerrariaBot:
+class Trott:
     def __init__(self, audio_device_name):
-        self.ears = {"Fishing": FishingListener(audio_device_name)}
+        self.ears = {"fishing": FishingListener(audio_device_name)}
 
     def update(self):
         self.ears["Fishing"].test()
+
+
+def get_range(xf, yf, low, high):
+    """Gets the values in a range of frequencies.
+
+    Arguments:
+        xf: A list of frequencies, generated by rfftfreq
+        yf: The amplitudes of frequencies, generated by rfft
+        low: Lower bound of frequency to capture
+        high: Upper bound of frequency to capture
+
+    returns: Array of values within frquencies.
+    """
+    x1 = -1
+    for i in range(len(xf)):
+        if xf[i] >= low:
+            x1 = i
+            break
+    if x1 == -1:
+        raise ValueError
+
+    x2 = -1
+    for i in range(len(xf) - x1):
+        if xf[i + x1] >= high:
+            x2 = i + x1
+            break
+    if x2 == -1:
+        raise ValueError
+
+    return [abs(x) for x in yf[x1:x2]]
+
+
+def get_range_peak(xf, yf, low, high):
+    """Gets the total amplitude of a given range of frequencies.
+
+        Arguments:
+            xf: A list of frequencies, generated by rfftfreq
+            yf: The amplitudes of frequencies, generated by rfft
+            low: Lower bound of frequency to capture
+            high: Upper bound of frequency to capture
+
+        returns: The loudest volume found in the given range
+        """
+    values = get_range(xf, yf, low, high)
+    return np.amax(values)
+
+
+def get_range_dip(xf, yf, low, high):
+    """Gets the total amplitude of a given range of frequencies.
+
+    Arguments:
+        xf: A list of frequencies, generated by rfftfreq
+        yf: The amplitudes of frequencies, generated by rfft
+        low: Lower bound of frequency to capture
+        high: Upper bound of frequency to capture
+
+    returns: The loudest volume found in the given range
+    """
+    values = get_range(xf, yf, low, high)
+    return np.amin(values)
 
 
 def get_range_sum(xf, yf, low, high):
@@ -279,6 +338,7 @@ def get_range_sum(xf, yf, low, high):
 
     returns: The amplitude of the range of frequencies
     """
+    # TODO: I could change this to a "get average of range" function. This would avoid issues with bitrates or range sizes.
     x1 = -1
     for i in range(len(xf)):
         if xf[i] >= low:
@@ -298,6 +358,37 @@ def get_range_sum(xf, yf, low, high):
     return np.sum([abs(x) for x in yf[x1:x2]])
 
 
+def get_range_average(xf, yf, low, high):
+    """Gets the total amplitude of a given range of frequencies.
+
+    Arguments:
+        xf: A list of frequencies, generated by rfftfreq
+        yf: The amplitudes of frequencies, generated by rfft
+        low: Lower bound of frequency to capture
+        high: Upper bound of frequency to capture
+
+    returns: The amplitude of the range of frequencies
+    """
+    # TODO: I could change this to a "get average of range" function. This would avoid issues with bitrates or range sizes.
+    x1 = -1
+    for i in range(len(xf)):
+        if xf[i] >= low:
+            x1 = i
+            break
+    if x1 == -1:
+        raise ValueError
+
+    x2 = -1
+    for i in range(len(xf) - x1):
+        if xf[i+x1] >= high:
+            x2 = i + x1
+            break
+    if x2 == -1:
+        raise ValueError
+
+    return np.mean([abs(x) for x in yf[x1:x2]])
+
+
 # TODO: I need to find a way to compare the values of my graph to its surroundings, to detect when a spike has happened.
 #  I could set specific number thresholds. This would be easiest, but will also break fastest.
 #  I could compare to the last "frame". This scales with volume, but is complex.
@@ -308,5 +399,5 @@ def get_range_sum(xf, yf, low, high):
 if __name__ == "__main__":
     #TerrariaBot("Line In (High Definition Audio ")
     l = FishingListener("Line In (High Definition Audio ")
-    #l.parse_file_intervals_overlap("terr_example_audio.wav")
+    #l.parse_file_intervals_overlap("Clean_fishing_example.wav")
     l.listen()
